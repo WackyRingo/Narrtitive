@@ -63,15 +63,25 @@ MCap now: $1,296,000
      the sells are larger. Price change doesn't have that problem.
    - Then either volume at `VOLUME_TO_LIQUIDITY_RATIO`x liquidity or
      more, or buy transactions clearing `MIN_BUYS_PER_HOUR` in the last hour
-4. Once alerted, a token gets checked again at each hour mark in
+4. Scores it 0-100 on raw activity strength (turnover, buy pressure,
+   momentum, pool size) via `compute_activity_score()` — this is a
+   snapshot of how strong the trading *looks* right now, not a
+   prediction and not a safety check. A well-funded rug can score just
+   as high as a real mover; it says nothing about holders or contract
+   risk.
+5. Once alerted, a token gets checked again at each hour mark in
    `CHECKPOINT_HOURS` (1h/6h/24h by default), and the result — how far
    price has moved since the alert — gets sent as its own message.
-5. After each scan, if any alerts have reached their final checkpoint,
+6. After each scan, if any alerts have reached their final checkpoint,
    a running scorecard prints: how many were up, and by how much on
    average. This is the actual answer to "does this work" — not a
    vibe, a number that updates itself.
-6. Everything above prints to the console, and pushes to Telegram too
-   if `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` are set.
+7. Everything above prints to the console, and pushes to Telegram too
+   if `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` are set. Telegram sends
+   check the actual response and retry once on a rate limit, with a
+   small pace-yourself delay between messages — a big batch sent
+   back-to-back with no delay can get silently rate-limited, which
+   would otherwise look like nothing went wrong at all.
 
 ## Turning on Telegram alerts (optional, also free)
 
