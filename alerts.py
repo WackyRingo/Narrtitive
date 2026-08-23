@@ -1,9 +1,8 @@
 """
-Formats and fires an alert when the chain scanner flags a token —
-Phanes-style stats block plus a "Read" section underneath, generated
-by the free rule-based logic in chain_scanner.py. Console output
-always happens; Telegram is used too if configured in .env. No paid
-API of any kind anywhere in this file.
+Formats and fires alerts — both new "unusual activity" alerts and the
+later checkpoint check-ins that report what actually happened. Console
+output always happens; Telegram is used too if configured in .env. No
+paid API of any kind anywhere in this file.
 """
 
 import requests
@@ -60,10 +59,24 @@ def format_alert(token: dict) -> str:
     return "\n".join(lines)
 
 
-def send_alert(token: dict):
-    message = format_alert(token)
-    print(message)
+def format_checkpoint_alert(item: dict) -> str:
+    pct = item.get("pct_change")
+    pct_str = _fmt_pct(pct)
+    lines = [
+        "",
+        f"📍 {item['hours']:.0f}H CHECK-IN",
+        f"${item.get('symbol')} — {item.get('name')}",
+        f"Since alert: {pct_str}",
+    ]
+    if item.get("market_cap"):
+        lines.append(f"MCap now: {_fmt_usd(item['market_cap'])}")
+    if item.get("url"):
+        lines.append(item["url"])
+    return "\n".join(lines)
 
+
+def _send(message: str):
+    print(message)
     if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
         try:
             requests.post(
@@ -73,3 +86,10 @@ def send_alert(token: dict):
             )
         except Exception as e:
             print(f"[alerts] Telegram send failed: {e}")
+
+
+def send_alert(item: dict):
+    if item.get("type") == "checkpoint":
+        _send(format_checkpoint_alert(item))
+    else:
+        _send(format_alert(item))
