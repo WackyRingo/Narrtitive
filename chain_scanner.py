@@ -105,8 +105,14 @@ def _is_unusually_active(pair: dict) -> bool:
     if price_change_1h is not None and price_change_1h < config.MIN_PRICE_CHANGE_1H:
         return False  # already falling — heavy volume while dropping isn't the signal we want
 
+    txns_1h = (pair.get("txns") or {}).get("h1") or {}
+    buys_1h = txns_1h.get("buys") or 0
+    sells_1h = txns_1h.get("sells") or 0
+    total_1h = buys_1h + sells_1h
+    if total_1h > 0 and (buys_1h / total_1h) < config.MIN_BUY_RATIO:
+        return False  # sells already outpacing buys, even if price hasn't caught up to it yet
+
     volume_24h = (pair.get("volume") or {}).get("h24") or 0
-    buys_1h = (pair.get("txns") or {}).get("h1", {}).get("buys") or 0
 
     if liquidity > 0 and (volume_24h / liquidity) >= config.VOLUME_TO_LIQUIDITY_RATIO:
         return True
@@ -145,9 +151,42 @@ def generate_quick_read(token: dict) -> str:
     return " ".join(notes)
 
 
+def compute_activity_score(token: dict) -> int:
+    """
+    0-100 composite of how strong the raw activity looks right now —
+    turnover relative to pool size, buy pressure, 1h momentum, and pool
+    size itself. This is NOT a prediction and NOT a safety check — it
+    says nothing about holders, contract risk, or legitimacy. A
+    well-funded rug can score just as high as a real mover.
+    """
+    liq = token.get("liquidity_usd") or 0
+    vol = token.get("volume_24h") or 0
+    buys = token.get("buys_1h") or 0
+    sells = token.get("sells_1h") or 0
+    price_change_1h = token.get("price_change_1h") or 0
+
+    vol_liq_ratio = (vol / liq) if liq > 0 else 0
+    buy_ratio = (buys / (buys + sells)) if (buys + sells) > 0 else 0.5
+
+    score = 0
+    score += min(vol_liq_ratio / 10, 1) * 30                              # turnover, caps at 10x
+    score += min(max(buy_ratio - 0.45, 0) / 0.55, 1) * 25                 # buy pressure, caps at 100% buys
+    score += min(max(price_change_1h, 0) / 200, 1) * 25                   # momentum, caps at +200%/1h
+    score += min(liq / 50000, 1) * 20                                     # pool size, caps at $50k+
+    return round(score)
+
+
+def _score_label(score: int) -> str:
+    if score >= 75:
+        return "Strong"
+    if score >= 50:
+        return "Moderate"
+    return "Weak"
+
+
 def _token_snapshot(pair: dict) -> dict:
     base = pair.get("baseToken", {})
-    return {
+    snap = {
         "type": "alert",
         "name": base.get("name"),
         "symbol": base.get("symbol"),
@@ -164,6 +203,9 @@ def _token_snapshot(pair: dict) -> dict:
         "age_hours": _pair_age_hours(pair),
         "url": pair.get("url"),
     }
+    snap["activity_score"] = compute_activity_score(snap)
+    snap["activity_label"] = _score_label(snap["activity_score"])
+    return snap
 
 
 def _next_due_checkpoint(t: dict, now: float) -> float | None:

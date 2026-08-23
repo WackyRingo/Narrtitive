@@ -18,6 +18,9 @@ VOLUME_TO_LIQUIDITY_RATIO = 2.0    # 24h volume at least this many x liquidity =
 MIN_BUYS_PER_HOUR = 50             # ...or at least this many buy txns in the last hour
 MIN_PRICE_CHANGE_1H = -5.0         # reject anything down more than this % in the last hour —
                                     # "high volume" while crashing isn't the signal we want
+MIN_BUY_RATIO = 0.45               # reject if sells already outnumber buys this much, even when
+                                    # price is still nominally up — catches order flow flipping
+                                    # before price has caught up to it
 MAX_TOKEN_AGE_HOURS = 24           # ignore tokens older than this (also catches old tokens that
                                     # only just got a paid boost, which isn't the same as being new)
 ALLOWED_CHAINS = ["solana", "bsc", "ethereum", "base"]
