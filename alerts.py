@@ -116,15 +116,18 @@ def _send_telegram(message: str) -> bool:
     return False
 
 
-def _send(message: str):
+def _send(message: str, telegram_eligible: bool = True):
     print(message)
-    if config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
+    if telegram_eligible and config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
         _send_telegram(message)
         time.sleep(TELEGRAM_SEND_DELAY_SECONDS)
 
 
 def send_alert(item: dict):
     if item.get("type") == "checkpoint":
-        _send(format_checkpoint_alert(item))
-    else:
-        _send(format_alert(item))
+        _send(format_checkpoint_alert(item))  # check-ins always go through — they're rare and valuable
+        return
+
+    score = item.get("activity_score")
+    eligible = score is None or score >= config.MIN_TELEGRAM_SCORE
+    _send(format_alert(item), telegram_eligible=eligible)

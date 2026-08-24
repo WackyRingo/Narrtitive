@@ -36,4 +36,7 @@ jobs:
           git add tracked_tokens.json
           git diff --staged --quiet || git commit -m "update tracked tokens"
           git pull --rebase origin main
-          git push
+          if ! git push; then
+            echo "::error::Failed to push tracked_tokens.json — tracking state was NOT saved this run. Check repo Settings > Actions > General > Workflow permissions is set to 'Read and write permissions'."
+            exit 1
+          fi

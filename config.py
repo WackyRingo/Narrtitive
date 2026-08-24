@@ -16,6 +16,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or None
 MIN_LIQUIDITY_USD = 5000           # skip tokens too thin to realistically trade
 VOLUME_TO_LIQUIDITY_RATIO = 2.0    # 24h volume at least this many x liquidity = unusual turnover
 MIN_BUYS_PER_HOUR = 50             # ...or at least this many buy txns in the last hour
+MIN_TELEGRAM_SCORE = 50            # only push to Telegram at/above this activity score (Moderate+);
+                                    # everything still prints to the console/Actions log regardless
 MIN_PRICE_CHANGE_1H = -5.0         # reject anything down more than this % in the last hour —
                                     # "high volume" while crashing isn't the signal we want
 MIN_BUY_RATIO = 0.45               # reject if sells already outnumber buys this much, even when
