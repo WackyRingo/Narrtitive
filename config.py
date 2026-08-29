@@ -18,6 +18,7 @@ VOLUME_TO_LIQUIDITY_RATIO = 2.0    # 24h volume at least this many x liquidity =
 MIN_BUYS_PER_HOUR = 50             # ...or at least this many buy txns in the last hour
 MIN_TELEGRAM_SCORE = 50            # only push to Telegram at/above this activity score (Moderate+);
                                     # everything still prints to the console/Actions log regardless
+PULLBACK_ALERT_THRESHOLD = 0.30    # warn once a token has fallen this much from its post-alert peak
 MIN_PRICE_CHANGE_1H = -5.0         # reject anything down more than this % in the last hour —
                                     # "high volume" while crashing isn't the signal we want
 MIN_BUY_RATIO = 0.45               # reject if sells already outnumber buys this much, even when
@@ -35,7 +36,7 @@ ALLOWED_CHAINS = ["solana", "bsc", "ethereum", "base"]
 # and records what actually happened — an honest track record instead of a
 # one-off claim. Tokens that DON'T qualify yet also get re-checked on this same
 # cadence, up to MAX_TOKEN_AGE_HOURS, to catch ones that build momentum later.
-CHECKPOINT_HOURS = [1, 6, 24]
+CHECKPOINT_HOURS = [1, 6, 24, 72]
 
 # --- Polling ---
 # DexScreener's discovery endpoints are free but rate-limited to 60 req/min —

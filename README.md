@@ -124,6 +124,14 @@ it's not a new problem to solve.
 - The thresholds are a starting point, tuned against one real batch of
   results — not exhaustively tested. Watch the track-record line over
   the next few days and adjust `config.py` if it's consistently off.
+- Real-world calibration check (independent Telegram call-tracking,
+  ~20-24h after alert): 0 of 19 tracked calls were positive, -81%
+  average, including two that had individually looked like genuine
+  winners at the 3-4x mark before fully reversing. This looks like a
+  category-level base rate for fresh, actively-pumping memecoins —
+  not something a scoring tweak fixes. Checkpoints now run to 72h so
+  the track record reflects the full cycle instead of an optimistic
+  early snapshot.
 - No rug-check is applied to matches — treat one as "worth a manual
   look," not a buy signal. High volume-to-liquidity can also mean a
   thin pool getting pumped, not just genuine demand.
