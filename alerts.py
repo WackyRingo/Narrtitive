@@ -2,11 +2,6 @@
 Formats and fires alerts — both new "unusual activity" alerts and the
 later checkpoint check-ins that report what actually happened. Console
 output always happens; Telegram is used too if configured in .env.
-
-Telegram sends check the actual response and retry once on a rate
-limit, and pace themselves slightly — sending a big batch back-to-back
-with no delay can get silently rate-limited by Telegram, which
-requests.post() alone won't tell you about.
 """
 
 import time
@@ -14,6 +9,7 @@ import time
 import requests
 
 import config
+from rug_filter import format_rug_line
 
 EXPLORER_BASE = {
     "bsc": "https://bscscan.com/token/",
@@ -22,6 +18,17 @@ EXPLORER_BASE = {
     "solana": "https://solscan.io/token/",
     "arbitrum": "https://arbiscan.io/token/",
     "polygon": "https://polygonscan.com/token/",
+}
+
+# Bubblemaps uses its own short chain codes, not the same ones DexScreener returns.
+BUBBLEMAPS_CHAIN = {
+    "solana": "sol",
+    "ethereum": "eth",
+    "bsc": "bsc",
+    "base": "base",
+    "arbitrum": "arbi",
+    "polygon": "poly",
+    "robinhood": "robinhood",
 }
 
 TELEGRAM_SEND_DELAY_SECONDS = 1.1  # stay under Telegram's per-chat rate limit
@@ -36,6 +43,11 @@ def _fmt_pct(n) -> str:
         return "—"
     sign = "+" if n >= 0 else ""
     return f"{sign}{n:.0f}%"
+
+
+def bubblemaps_url(chain: str, address: str) -> str | None:
+    bm_chain = BUBBLEMAPS_CHAIN.get(chain)
+    return f"https://app.bubblemaps.io/{bm_chain}/token/{address}" if bm_chain else None
 
 
 def format_alert(token: dict) -> str:
@@ -55,17 +67,22 @@ def format_alert(token: dict) -> str:
         f"├ Liquidity {_fmt_usd(token.get('liquidity_usd'))}",
         f"└ Txns 1h   B {token.get('buys_1h') if token.get('buys_1h') is not None else '—'}"
         f"  S {token.get('sells_1h') if token.get('sells_1h') is not None else '—'}",
-        "",
-        "Read",
-        f"└ {token.get('quick_read', '')}",
-        "",
     ]
+
+    rug_line = format_rug_line(token.get("rug_check"))
+    if rug_line:
+        lines += ["", "Security", f"└ {rug_line}"]
+
+    lines += ["", "Read", f"└ {token.get('quick_read', '')}", ""]
 
     if token.get("url"):
         lines.append(token["url"])
     explorer = EXPLORER_BASE.get(token.get("chain"))
     if explorer and token.get("address"):
         lines.append(f"{explorer}{token['address']}")
+    bm_url = bubblemaps_url(token.get("chain"), token.get("address")) if token.get("address") else None
+    if bm_url:
+        lines.append(bm_url)
 
     return "\n".join(lines)
 

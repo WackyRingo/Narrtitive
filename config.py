@@ -12,6 +12,11 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or None
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or None
 
+# --- Solana Tracker, optional (free tier: 2,500 requests/month, no card) ---
+# Powers the Security line: rug risk score, snipers, bundlers, insiders. Solana only.
+# Leave blank and alerts just skip straight to the Bubblemaps link instead.
+SOLANA_TRACKER_API_KEY = os.getenv("SOLANA_TRACKER_API_KEY") or None
+
 # --- Chain scanner thresholds ---
 MIN_LIQUIDITY_USD = 5000           # skip tokens too thin to realistically trade
 VOLUME_TO_LIQUIDITY_RATIO = 2.0    # 24h volume at least this many x liquidity = unusual turnover

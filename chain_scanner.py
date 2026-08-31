@@ -6,6 +6,11 @@ case they build momentum later, and checking in on already-alerted
 tokens at set intervals so there's an honest record of what actually
 happened afterward, not just a one-off claim. No Twitter, no API key,
 no cost — just DexScreener's free, keyless endpoints.
+
+Resilient by design: every network call catches its own failures and
+degrades to "nothing this cycle" instead of crashing, and tracking
+state is saved in a finally block so a crash partway through a cycle
+still keeps whatever progress was made rather than losing it.
 """
 
 from __future__ import annotations
@@ -18,9 +23,12 @@ from pathlib import Path
 import requests
 
 import config
+import rug_filter
 
 BASE_URL = "https://api.dexscreener.com"
 TRACKED_PATH = Path("tracked_tokens.json")
+PERMANENT_SEEN_PATH = Path("alerted_addresses.json")  # never pruned — belt and suspenders against repeats
+REQUEST_TIMEOUT = 15
 
 
 def _load_tracked() -> dict:
@@ -36,8 +44,22 @@ def _save_tracked(tracked: dict):
     TRACKED_PATH.write_text(json.dumps(tracked))
 
 
+def _load_permanent_seen() -> set:
+    if PERMANENT_SEEN_PATH.exists():
+        return set(json.loads(PERMANENT_SEEN_PATH.read_text()))
+    return set()
+
+
+def _save_permanent_seen(addresses: set):
+    PERMANENT_SEEN_PATH.write_text(json.dumps(sorted(addresses)))
+
+
 def get_latest_profiles() -> list[dict]:
-    resp = requests.get(f"{BASE_URL}/token-profiles/latest/v1", timeout=10)
+    try:
+        resp = requests.get(f"{BASE_URL}/token-profiles/latest/v1", timeout=REQUEST_TIMEOUT)
+    except requests.exceptions.RequestException as e:
+        print(f"[chain_scanner] profiles fetch failed (network error): {e}")
+        return []
     if resp.status_code != 200:
         print(f"[chain_scanner] profiles fetch failed: {resp.status_code}")
         return []
@@ -46,7 +68,11 @@ def get_latest_profiles() -> list[dict]:
 
 
 def get_latest_boosts() -> list[dict]:
-    resp = requests.get(f"{BASE_URL}/token-boosts/latest/v1", timeout=10)
+    try:
+        resp = requests.get(f"{BASE_URL}/token-boosts/latest/v1", timeout=REQUEST_TIMEOUT)
+    except requests.exceptions.RequestException as e:
+        print(f"[chain_scanner] boosts fetch failed (network error): {e}")
+        return []
     if resp.status_code != 200:
         print(f"[chain_scanner] boosts fetch failed: {resp.status_code}")
         return []
@@ -55,11 +81,16 @@ def get_latest_boosts() -> list[dict]:
 
 
 def get_pairs_batch(addresses: list[str]) -> dict[str, dict]:
-    """Fetch live pair data for many addresses at once, 30 per call (DexScreener's limit)."""
+    """Fetch live pair data for many addresses at once, 30 per call (DexScreener's limit).
+    A failed batch is skipped, not fatal — the rest of the batches still get processed."""
     results = {}
     for i in range(0, len(addresses), 30):
         batch = addresses[i:i + 30]
-        resp = requests.get(f"{BASE_URL}/latest/dex/tokens/{','.join(batch)}", timeout=15)
+        try:
+            resp = requests.get(f"{BASE_URL}/latest/dex/tokens/{','.join(batch)}", timeout=REQUEST_TIMEOUT)
+        except requests.exceptions.RequestException as e:
+            print(f"[chain_scanner] batch pair fetch failed (network error): {e}")
+            continue
         if resp.status_code != 200:
             print(f"[chain_scanner] batch pair fetch failed: {resp.status_code}")
             continue
@@ -121,7 +152,40 @@ def _is_unusually_active(pair: dict) -> bool:
     return False
 
 
-def generate_quick_read(token: dict) -> str:
+def compute_activity_score(token: dict) -> int:
+    """
+    0-100 composite of how strong the raw activity looks right now —
+    turnover relative to pool size, buy pressure, 1h momentum, and pool
+    size itself. This is NOT a prediction and NOT a safety check — it
+    says nothing about holders, contract risk, or legitimacy. A
+    well-funded rug can score just as high as a real mover.
+    """
+    liq = token.get("liquidity_usd") or 0
+    vol = token.get("volume_24h") or 0
+    buys = token.get("buys_1h") or 0
+    sells = token.get("sells_1h") or 0
+    price_change_1h = token.get("price_change_1h") or 0
+
+    vol_liq_ratio = (vol / liq) if liq > 0 else 0
+    buy_ratio = (buys / (buys + sells)) if (buys + sells) > 0 else 0.5
+
+    score = 0
+    score += min(vol_liq_ratio / 10, 1) * 30
+    score += min(max(buy_ratio - 0.45, 0) / 0.55, 1) * 25
+    score += min(max(price_change_1h, 0) / 200, 1) * 25
+    score += min(liq / 50000, 1) * 20
+    return round(score)
+
+
+def _score_label(score: int) -> str:
+    if score >= 75:
+        return "Strong"
+    if score >= 50:
+        return "Moderate"
+    return "Weak"
+
+
+def generate_quick_read(token: dict, has_rug_check: bool = False) -> str:
     """Free, rule-based read on the numbers — no API call, no cost."""
     notes = []
 
@@ -144,44 +208,17 @@ def generate_quick_read(token: dict) -> str:
     if token.get("age_hours") is not None and token["age_hours"] < 2:
         notes.append(f"Only {token['age_hours']:.1f}h old — very early, which cuts both ways.")
 
-    notes.append(
-        "No holder or rug-check data yet (that's the rug-filter module, still to build) — "
-        "treat this as a lead to check manually, not a signal to act on."
-    )
+    if has_rug_check:
+        notes.append(
+            "See the Security line above for holder/sniper/bundler signals — a real check now, "
+            "still not a guarantee. Clearing it narrows out known red flags, it doesn't confirm safety."
+        )
+    else:
+        notes.append(
+            "No rug-check data for this chain yet — treat this as a lead to check manually, "
+            "not a signal to act on."
+        )
     return " ".join(notes)
-
-
-def compute_activity_score(token: dict) -> int:
-    """
-    0-100 composite of how strong the raw activity looks right now —
-    turnover relative to pool size, buy pressure, 1h momentum, and pool
-    size itself. This is NOT a prediction and NOT a safety check — it
-    says nothing about holders, contract risk, or legitimacy. A
-    well-funded rug can score just as high as a real mover.
-    """
-    liq = token.get("liquidity_usd") or 0
-    vol = token.get("volume_24h") or 0
-    buys = token.get("buys_1h") or 0
-    sells = token.get("sells_1h") or 0
-    price_change_1h = token.get("price_change_1h") or 0
-
-    vol_liq_ratio = (vol / liq) if liq > 0 else 0
-    buy_ratio = (buys / (buys + sells)) if (buys + sells) > 0 else 0.5
-
-    score = 0
-    score += min(vol_liq_ratio / 10, 1) * 30                              # turnover, caps at 10x
-    score += min(max(buy_ratio - 0.45, 0) / 0.55, 1) * 25                 # buy pressure, caps at 100% buys
-    score += min(max(price_change_1h, 0) / 200, 1) * 25                   # momentum, caps at +200%/1h
-    score += min(liq / 50000, 1) * 20                                     # pool size, caps at $50k+
-    return round(score)
-
-
-def _score_label(score: int) -> str:
-    if score >= 75:
-        return "Strong"
-    if score >= 50:
-        return "Moderate"
-    return "Weak"
 
 
 def _token_snapshot(pair: dict) -> dict:
@@ -224,80 +261,98 @@ def scan_for_active_new_tokens() -> list[dict]:
     built momentum since; and checks in on already-alerted tokens at
     set intervals to record what actually happened. Returns a list of
     dicts tagged "type": "alert" or "checkpoint".
+
+    Whatever progress is made gets saved in the finally block even if
+    something unexpected fails partway through this function.
     """
     tracked = _load_tracked()
+    permanent_seen = _load_permanent_seen()
     now = time.time()
     outputs = []
 
-    candidates = get_latest_profiles() + get_latest_boosts()
-    for c in candidates:
-        addr = c.get("tokenAddress")
-        if addr and addr not in tracked:
-            tracked[addr] = {"first_seen": now, "status": "watching", "chain": c.get("chainId")}
+    try:
+        candidates = get_latest_profiles() + get_latest_boosts()
+        for c in candidates:
+            addr = c.get("tokenAddress")
+            if addr and addr not in tracked and addr not in permanent_seen:
+                tracked[addr] = {"first_seen": now, "status": "watching", "chain": c.get("chainId")}
 
-    still_watching = [
-        addr for addr, t in tracked.items()
-        if t.get("status") == "watching" and (now - t["first_seen"]) / 3600 <= config.MAX_TOKEN_AGE_HOURS
-    ]
-    due_for_checkpoint = [
-        addr for addr, t in tracked.items()
-        if t.get("status") == "alerted" and _next_due_checkpoint(t, now) is not None
-    ]
-    to_fetch = list(set(still_watching + due_for_checkpoint))
-    pairs = get_pairs_batch(to_fetch) if to_fetch else {}
+        still_watching = [
+            addr for addr, t in tracked.items()
+            if t.get("status") == "watching" and (now - t["first_seen"]) / 3600 <= config.MAX_TOKEN_AGE_HOURS
+        ]
+        due_for_checkpoint = [
+            addr for addr, t in tracked.items()
+            if t.get("status") == "alerted" and _next_due_checkpoint(t, now) is not None
+        ]
+        to_fetch = list(set(still_watching + due_for_checkpoint))
+        pairs = get_pairs_batch(to_fetch) if to_fetch else {}
 
-    for addr in still_watching:
-        pair = pairs.get(addr)
-        if not pair or not _is_unusually_active(pair):
-            continue
-        snap = _token_snapshot(pair)
-        snap["quick_read"] = generate_quick_read(snap)
-        outputs.append(snap)
-        tracked[addr].update({
-            "status": "alerted",
-            "alerted_at": now,
-            "alert_price": _safe_float(pair.get("priceUsd")),
-            "name": snap["name"],
-            "symbol": snap["symbol"],
-            "checkpoints_done": [],
-        })
+        for addr in still_watching:
+            try:
+                pair = pairs.get(addr)
+                if not pair or not _is_unusually_active(pair):
+                    continue
+                snap = _token_snapshot(pair)
+                snap["rug_check"] = rug_filter.get_rug_check(snap["chain"], snap["address"])
+                snap["quick_read"] = generate_quick_read(snap, has_rug_check=snap["rug_check"] is not None)
+                outputs.append(snap)
+                tracked[addr].update({
+                    "status": "alerted",
+                    "alerted_at": now,
+                    "alert_price": _safe_float(pair.get("priceUsd")),
+                    "alert_score": snap["activity_score"],
+                    "name": snap["name"],
+                    "symbol": snap["symbol"],
+                    "checkpoints_done": [],
+                })
+                permanent_seen.add(addr)
+            except Exception as e:
+                print(f"[chain_scanner] error evaluating {addr}: {e}")
 
-    for addr in due_for_checkpoint:
-        pair = pairs.get(addr)
-        t = tracked[addr]
-        due_hours = _next_due_checkpoint(t, now)
-        if not pair:
-            t["checkpoints_done"] = t.get("checkpoints_done", []) + [due_hours]
-            continue
+        for addr in due_for_checkpoint:
+            try:
+                pair = pairs.get(addr)
+                t = tracked[addr]
+                due_hours = _next_due_checkpoint(t, now)
+                if not pair:
+                    t["checkpoints_done"] = t.get("checkpoints_done", []) + [due_hours]
+                    continue
 
-        current_price = _safe_float(pair.get("priceUsd"))
-        alert_price = t.get("alert_price")
-        pct_change = None
-        if current_price is not None and alert_price:
-            pct_change = (current_price - alert_price) / alert_price * 100
+                current_price = _safe_float(pair.get("priceUsd"))
+                alert_price = t.get("alert_price")
+                pct_change = None
+                if current_price is not None and alert_price:
+                    pct_change = (current_price - alert_price) / alert_price * 100
 
-        outputs.append({
-            "type": "checkpoint",
-            "name": t.get("name"),
-            "symbol": t.get("symbol"),
-            "chain": t.get("chain"),
-            "hours": due_hours,
-            "pct_change": pct_change,
-            "market_cap": pair.get("marketCap"),
-            "url": pair.get("url"),
-        })
-        t["checkpoints_done"] = t.get("checkpoints_done", []) + [due_hours]
-        if pct_change is not None:
-            t["last_pct_change"] = pct_change
+                outputs.append({
+                    "type": "checkpoint",
+                    "name": t.get("name"),
+                    "symbol": t.get("symbol"),
+                    "chain": t.get("chain"),
+                    "hours": due_hours,
+                    "pct_change": pct_change,
+                    "market_cap": pair.get("marketCap"),
+                    "url": pair.get("url"),
+                })
+                t["checkpoints_done"] = t.get("checkpoints_done", []) + [due_hours]
+                if pct_change is not None:
+                    t["last_pct_change"] = pct_change
+            except Exception as e:
+                print(f"[chain_scanner] error on checkpoint for {addr}: {e}")
 
-    max_checkpoint = max(config.CHECKPOINT_HOURS)
-    tracked = {
-        addr: t for addr, t in tracked.items()
-        if (t.get("status") == "watching" and (now - t["first_seen"]) / 3600 <= config.MAX_TOKEN_AGE_HOURS)
-        or (t.get("status") == "alerted" and (now - t.get("alerted_at", now)) / 3600 <= max_checkpoint + 6)
-    }
+        max_checkpoint = max(config.CHECKPOINT_HOURS)
+        tracked = {
+            addr: t for addr, t in tracked.items()
+            if (t.get("status") == "watching" and (now - t["first_seen"]) / 3600 <= config.MAX_TOKEN_AGE_HOURS)
+            or (t.get("status") == "alerted" and (now - t.get("alerted_at", now)) / 3600 <= max_checkpoint + 6)
+        }
+    except Exception as e:
+        print(f"[chain_scanner] scan cycle error: {e}")
+    finally:
+        _save_tracked(tracked)
+        _save_permanent_seen(permanent_seen)
 
-    _save_tracked(tracked)
     return outputs
 
 
