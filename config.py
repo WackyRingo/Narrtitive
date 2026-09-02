@@ -1,6 +1,7 @@
 """
 Configuration for the narrative tracker. Runs entirely free with zero
-API keys — Telegram is the only optional add-on, and it's free too.
+API keys — Telegram and the Solana risk check are optional add-ons,
+and both are free too.
 """
 
 import os
@@ -23,7 +24,6 @@ VOLUME_TO_LIQUIDITY_RATIO = 2.0    # 24h volume at least this many x liquidity =
 MIN_BUYS_PER_HOUR = 50             # ...or at least this many buy txns in the last hour
 MIN_TELEGRAM_SCORE = 50            # only push to Telegram at/above this activity score (Moderate+);
                                     # everything still prints to the console/Actions log regardless
-PULLBACK_ALERT_THRESHOLD = 0.30    # warn once a token has fallen this much from its post-alert peak
 MIN_PRICE_CHANGE_1H = -5.0         # reject anything down more than this % in the last hour —
                                     # "high volume" while crashing isn't the signal we want
 MIN_BUY_RATIO = 0.45               # reject if sells already outnumber buys this much, even when

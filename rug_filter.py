@@ -10,6 +10,12 @@ yet; a second provider would be needed for BSC/ETH/Base.
 
 Needs SOLANA_TRACKER_API_KEY in .env. Leave it blank and this returns
 None everywhere — everything else keeps working exactly as before.
+
+Logs every step on purpose right now — whether it's even being called,
+what status code comes back, what the response actually contains —
+because "the key's there but nothing happens" can't be debugged
+blind. Once this is confirmed working end to end, the verbosity can
+be dialed back.
 """
 
 from __future__ import annotations
@@ -27,9 +33,14 @@ def get_rug_check(chain: str, address: str) -> dict | None:
     and sniper/bundler/insider percentages, or None if unavailable —
     wrong chain, no API key set, or the request failed for any reason.
     """
-    if chain != "solana" or not config.SOLANA_TRACKER_API_KEY:
+    if chain != "solana":
         return None
 
+    if not config.SOLANA_TRACKER_API_KEY:
+        print("[rug_filter] skipped — SOLANA_TRACKER_API_KEY not set")
+        return None
+
+    print(f"[rug_filter] requesting risk data for {address}")
     try:
         resp = requests.get(
             f"{BASE_URL}/tokens/{address}",
@@ -41,21 +52,28 @@ def get_rug_check(chain: str, address: str) -> dict | None:
         return None
 
     if resp.status_code != 200:
-        print(f"[rug_filter] request failed: {resp.status_code}")
+        print(f"[rug_filter] request failed: {resp.status_code} — body: {resp.text[:300]}")
         return None
 
     try:
-        risk = (resp.json() or {}).get("risk") or {}
-        return {
-            "score": risk.get("score"),
-            "rugged": risk.get("rugged"),
-            "sniper_pct": (risk.get("snipers") or {}).get("totalPercentage"),
-            "bundler_pct": (risk.get("bundlers") or {}).get("totalPercentage"),
-            "insider_pct": (risk.get("insiders") or {}).get("totalPercentage"),
-        }
+        data = resp.json() or {}
     except Exception as e:
-        print(f"[rug_filter] unexpected response shape: {e}")
+        print(f"[rug_filter] response wasn't valid JSON: {e} — raw: {resp.text[:300]}")
         return None
+
+    risk = data.get("risk") or {}
+    if not risk:
+        print(f"[rug_filter] got a 200 but no 'risk' field — top-level keys were: {list(data.keys())}")
+        return None
+
+    print(f"[rug_filter] got risk data — score={risk.get('score')}, rugged={risk.get('rugged')}")
+    return {
+        "score": risk.get("score"),
+        "rugged": risk.get("rugged"),
+        "sniper_pct": (risk.get("snipers") or {}).get("totalPercentage"),
+        "bundler_pct": (risk.get("bundlers") or {}).get("totalPercentage"),
+        "insider_pct": (risk.get("insiders") or {}).get("totalPercentage"),
+    }
 
 
 def format_rug_line(rug: dict | None) -> str | None:

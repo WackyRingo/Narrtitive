@@ -33,7 +33,10 @@ REQUEST_TIMEOUT = 15
 
 def _load_tracked() -> dict:
     if TRACKED_PATH.exists():
-        return json.loads(TRACKED_PATH.read_text())
+        try:
+            return json.loads(TRACKED_PATH.read_text())
+        except (json.JSONDecodeError, ValueError):
+            print("[chain_scanner] tracked_tokens.json was empty or corrupted — starting fresh")
     return {}
 
 
@@ -46,7 +49,10 @@ def _save_tracked(tracked: dict):
 
 def _load_permanent_seen() -> set:
     if PERMANENT_SEEN_PATH.exists():
-        return set(json.loads(PERMANENT_SEEN_PATH.read_text()))
+        try:
+            return set(json.loads(PERMANENT_SEEN_PATH.read_text()))
+        except (json.JSONDecodeError, ValueError):
+            print("[chain_scanner] alerted_addresses.json was empty or corrupted — starting fresh")
     return set()
 
 
