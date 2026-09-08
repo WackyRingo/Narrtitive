@@ -5,12 +5,9 @@ on:
     - cron: '*/10 * * * *'   # every 10 minutes — 5 min is the fastest GitHub allows
   workflow_dispatch: {}      # lets you trigger a run manually from the Actions tab
 
-permissions:
-  contents: write
-
 concurrency:
   group: narrative-tracker-scan
-  cancel-in-progress: false            # needed so the workflow can commit seen_tokens.json back
+  cancel-in-progress: false  # queue overlapping runs instead of letting them race
 
 jobs:
   scan:
@@ -24,26 +21,37 @@ jobs:
 
       - run: pip install -r requirements.txt
 
+      # Tracking state now persists via GitHub's own Actions cache instead of a
+      # git commit/push — this needs no repo write permission at all, which
+      # sidesteps the whole "Workflow permissions" setting that was never
+      # confirmed fixed. restore-keys with a prefix always finds the most
+      # recent save, even though each run saves under a new, unique key.
+      - name: Restore tracking state
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            tracked_tokens.json
+            alerted_addresses.json
+          key: tracker-state-${{ github.run_id }}
+          restore-keys: |
+            tracker-state-
+
+      - name: Show restored state
+        run: |
+          echo "--- tracking files after cache restore ---"
+          ls -la tracked_tokens.json alerted_addresses.json 2>&1 || echo "neither file restored yet — expected only on the very first run ever"
+
       - run: python scan_once.py
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           SOLANA_TRACKER_API_KEY: ${{ secrets.SOLANA_TRACKER_API_KEY }}
 
-      - name: Save scanner memory
+      - name: Save tracking state
         if: always()
-        run: |
-          echo "--- checking tracking files exist before git add ---"
-          ls -la tracked_tokens.json alerted_addresses.json 2>&1 || echo "WARNING: one or both files missing here"
-          touch tracked_tokens.json alerted_addresses.json
-          git config user.name "narrative-tracker-bot"
-          git config user.email "actions@users.noreply.github.com"
-          git add tracked_tokens.json alerted_addresses.json
-          git diff --staged --quiet || git commit -m "update tracked tokens"
-          git pull --rebase origin main
-          if ! git push; then
-            echo "::error::Failed to push tracked_tokens.json — tracking state was NOT saved this run. Check repo Settings > Actions > General > Workflow permissions is set to 'Read and write permissions'."
-            exit 1
-          fi
-          echo "--- push succeeded, latest commit: ---"
-          git log -1 --stat
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            tracked_tokens.json
+            alerted_addresses.json
+          key: tracker-state-${{ github.run_id }}

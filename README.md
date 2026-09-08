@@ -122,13 +122,14 @@ the Solana risk check.
 
 ## Running it on GitHub Actions
 
-Re-upload the changed files the same way as always — dragging a file
-with the same name as an existing one replaces it, not a new problem.
+Tracking state now persists via GitHub's own Actions cache instead of a
+git commit — this needs no repo write permission at all, unlike the
+old approach. Re-upload the changed files the same way as always —
+dragging a file with the same name as an existing one replaces it.
 
-**Files that changed this round:** `rug_filter.py` (new), `config.py`,
-`chain_scanner.py`, `alerts.py`, `.env.example`, and
-`.github/workflows/scan.yml`. `main.py`, `scan_once.py`,
-`requirements.txt` are unchanged.
+**Files that changed this round:** `rug_filter.py` and
+`.github/workflows/scan.yml`. Everything else is unchanged from the
+last full upload.
 
 ## Known limitations
 
