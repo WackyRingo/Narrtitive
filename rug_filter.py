@@ -16,9 +16,15 @@ and risk.risks (a flat array of {name, level} factor objects) as the
 real response shape. An earlier version of this file assumed a nested
 risk.snipers/bundlers/insiders.totalPercentage shape that turned out
 to be wrong — that's kept below as a fallback attempt in case it does
-exist on some responses, but risk.risks is the confirmed source, and
-the raw keys get logged so a future mismatch is visible immediately
-instead of silently returning nothing.
+exist on some responses, but risk.risks is the confirmed source.
+
+The "rugged" field specifically needs care: if the API returns it as
+the STRING "false" rather than a real JSON boolean, a bare `if value:`
+check treats that non-empty string as truthy — meaning every single
+token would show as rugged regardless of the real answer. _is_rugged()
+below handles a real bool or a "true"/"false" string either way, and
+the raw value + its Python type get logged so a wrong assumption is
+visible immediately instead of silently flagging everything.
 """
 
 from __future__ import annotations
@@ -28,6 +34,14 @@ import requests
 import config
 
 BASE_URL = "https://data.solanatracker.io"
+
+
+def _is_rugged(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return bool(value)
 
 
 def get_rug_check(chain: str, address: str) -> dict | None:
@@ -71,12 +85,9 @@ def get_rug_check(chain: str, address: str) -> dict | None:
         return None
 
     score = risk.get("score")
-    rugged = risk.get("rugged")
+    rugged_raw = risk.get("rugged")
+    rugged = _is_rugged(rugged_raw)
 
-    # Confirmed shape: risk.risks is a flat array of {name, level} factor objects.
-    # Pull out danger-level flags, and separately look for anything mentioning
-    # snipers/bundlers/insiders by name so those signals surface even without
-    # a dedicated percentage field.
     danger_flags = []
     factor_mentions = {}
     for factor in risk.get("risks") or []:
@@ -88,13 +99,13 @@ def get_rug_check(chain: str, address: str) -> dict | None:
             if key in lname and key not in factor_mentions:
                 factor_mentions[key] = name
 
-    # Fallback attempt at the nested-object shape, in case it exists too.
     sniper_pct = (risk.get("snipers") or {}).get("totalPercentage")
     bundler_pct = (risk.get("bundlers") or {}).get("totalPercentage")
     insider_pct = (risk.get("insiders") or {}).get("totalPercentage")
 
     print(
-        f"[rug_filter] got risk data — score={score}, rugged={rugged}, "
+        f"[rug_filter] got risk data — score={score!r}, rugged_raw={rugged_raw!r} "
+        f"({type(rugged_raw).__name__}) -> parsed as {rugged}, "
         f"{len(risk.get('risks') or [])} risk factor(s), raw risk keys: {list(risk.keys())}"
     )
 

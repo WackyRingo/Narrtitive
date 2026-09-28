@@ -98,7 +98,7 @@ def get_pairs_batch(addresses: list[str]) -> dict[str, dict]:
             print(f"[chain_scanner] batch pair fetch failed (network error): {e}")
             continue
         if resp.status_code != 200:
-            print(f"[chain_scanner] batch pair fetch failed: {resp.status_code}")
+            print(f"[chain_scanner] batch pair fetch failed: {resp.status_code} — body: {resp.text[:200]}")
             continue
         for pair in resp.json().get("pairs") or []:
             addr = (pair.get("baseToken") or {}).get("address")
