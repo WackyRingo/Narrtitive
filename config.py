@@ -18,6 +18,13 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or None
 # Leave blank and alerts just skip straight to the Bubblemaps link instead.
 SOLANA_TRACKER_API_KEY = os.getenv("SOLANA_TRACKER_API_KEY") or None
 
+# TEMPORARY DEBUG — remove once the key issue is confirmed fixed. Prints whether
+# the env var name exists at all and how long the value is (never the value
+# itself), which tells us definitively whether this is a workflow-file problem
+# (name never arrives) or a secret-value problem (arrives but empty/wrong).
+print(f"[debug] SOLANA_TRACKER_API_KEY present in environment: {'SOLANA_TRACKER_API_KEY' in os.environ}")
+print(f"[debug] SOLANA_TRACKER_API_KEY value length: {len(os.environ.get('SOLANA_TRACKER_API_KEY', ''))}")
+
 # --- Chain scanner thresholds ---
 MIN_LIQUIDITY_USD = 5000           # skip tokens too thin to realistically trade
 VOLUME_TO_LIQUIDITY_RATIO = 2.0    # 24h volume at least this many x liquidity = unusual turnover
