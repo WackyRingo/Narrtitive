@@ -2,12 +2,12 @@ name: narrative-tracker-scan
 
 on:
   schedule:
-    - cron: '*/10 * * * *'   # every 10 minutes — 5 min is the fastest GitHub allows
-  workflow_dispatch: {}      # lets you trigger a run manually from the Actions tab
+    - cron: '*/10 * * * *'
+  workflow_dispatch: {}
 
 concurrency:
   group: narrative-tracker-scan
-  cancel-in-progress: false  # queue overlapping runs instead of letting them race
+  cancel-in-progress: false
 
 jobs:
   scan:
@@ -21,11 +21,6 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      # Tracking state now persists via GitHub's own Actions cache instead of a
-      # git commit/push — this needs no repo write permission at all, which
-      # sidesteps the whole "Workflow permissions" setting that was never
-      # confirmed fixed. restore-keys with a prefix always finds the most
-      # recent save, even though each run saves under a new, unique key.
       - name: Restore tracking state
         uses: actions/cache/restore@v4
         with:
