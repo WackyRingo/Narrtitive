@@ -133,6 +133,17 @@ last full upload.
 
 ## Known limitations
 
+- Check-ins show **ATH** — the highest price seen at our scans since the
+  alert — next to the current price, Phanes-style. Scans run every 10-40
+  minutes, so a spike that rose and fell between two scans is missed and
+  the true ATH can be higher than shown.
+- A coin is retired with one final 💀 DEAD message once it's down 90%+
+  from the alert, its pool drains below $1,000, or its pair disappears
+  (confirmed on 2 scans in a row). After that it's no longer checked.
+  Thresholds are `DEAD_*` in `config.py`.
+- Check-in and dead messages only go to Telegram for alerts that scored
+  high enough to be pushed there; everything is still tracked.
+
 - DexScreener's and Solana Tracker's endpoints occasionally change —
   check their docs if a call starts erroring.
 - The thresholds are a starting point, tuned against real batches of

@@ -86,29 +86,58 @@ def get_latest_boosts() -> list[dict]:
     return data if isinstance(data, list) else data.get("data", [])
 
 
-def get_pairs_batch(addresses: list[str]) -> dict[str, dict]:
-    """Fetch live pair data for many addresses at once, 30 per call (DexScreener's limit).
-    A failed batch is skipped, not fatal — the rest of the batches still get processed."""
-    results = {}
+def _fetch_pairs(batch: list, results: dict, failed: set):
+    """One DexScreener lookup. A 400/404 on a multi-address batch usually means one bad
+    address poisoned the whole call, so split it in half and retry to isolate it — an
+    address that 404s on its own is simply "not found". Network errors and other statuses
+    mark the whole batch as failed (no splitting, so an outage can't snowball into dozens
+    of slow calls)."""
+    try:
+        resp = requests.get(f"{BASE_URL}/latest/dex/tokens/{','.join(batch)}", timeout=REQUEST_TIMEOUT)
+    except requests.exceptions.RequestException as e:
+        print(f"[chain_scanner] batch pair fetch failed (network error): {e}")
+        failed.update(batch)
+        return
+
+    if resp.status_code in (400, 404):
+        if len(batch) > 1:
+            mid = len(batch) // 2
+            _fetch_pairs(batch[:mid], results, failed)
+            _fetch_pairs(batch[mid:], results, failed)
+        else:
+            print(f"[chain_scanner] {batch[0]} not found ({resp.status_code})")
+        return
+
+    if resp.status_code != 200:
+        print(f"[chain_scanner] batch pair fetch failed: {resp.status_code} — body: {resp.text[:200]}")
+        failed.update(batch)
+        return
+
+    try:
+        pairs = resp.json().get("pairs") or []
+    except ValueError:
+        print("[chain_scanner] batch pair fetch returned invalid JSON")
+        failed.update(batch)
+        return
+
+    for pair in pairs:
+        addr = (pair.get("baseToken") or {}).get("address")
+        if not addr:
+            continue
+        liq = (pair.get("liquidity") or {}).get("usd", 0) or 0
+        existing = results.get(addr)
+        if not existing or liq > (existing.get("liquidity") or {}).get("usd", 0):
+            results[addr] = pair
+
+
+def get_pairs_batch(addresses: list) -> tuple:
+    """Fetch live pair data for many addresses, 30 per call (DexScreener's limit).
+    Returns (pair_by_address, failed_addresses) — "failed" means we couldn't reach
+    DexScreener for those, which is different from the token simply not being found."""
+    results, failed = {}, set()
     for i in range(0, len(addresses), 30):
-        batch = addresses[i:i + 30]
-        try:
-            resp = requests.get(f"{BASE_URL}/latest/dex/tokens/{','.join(batch)}", timeout=REQUEST_TIMEOUT)
-        except requests.exceptions.RequestException as e:
-            print(f"[chain_scanner] batch pair fetch failed (network error): {e}")
-            continue
-        if resp.status_code != 200:
-            print(f"[chain_scanner] batch pair fetch failed: {resp.status_code} — body: {resp.text[:200]}")
-            continue
-        for pair in resp.json().get("pairs") or []:
-            addr = (pair.get("baseToken") or {}).get("address")
-            if not addr:
-                continue
-            liq = (pair.get("liquidity") or {}).get("usd", 0) or 0
-            existing = results.get(addr)
-            if not existing or liq > (existing.get("liquidity") or {}).get("usd", 0):
-                results[addr] = pair
-    return results
+        _fetch_pairs(addresses[i:i + 30], results, failed)
+    return results, failed
 
 
 def _pair_age_hours(pair: dict) -> float | None:
@@ -219,6 +248,11 @@ def generate_quick_read(token: dict, has_rug_check: bool = False) -> str:
             "See the Security line above for holder/sniper/bundler signals — a real check now, "
             "still not a guarantee. Clearing it narrows out known red flags, it doesn't confirm safety."
         )
+    elif token.get("chain") == "solana":
+        notes.append(
+            "Rug check returned nothing for this token (API unavailable or over quota) — "
+            "treat this as a lead to check manually, not a signal to act on."
+        )
     else:
         notes.append(
             "No rug-check data for this chain yet — treat this as a lead to check manually, "
@@ -251,30 +285,117 @@ def _token_snapshot(pair: dict) -> dict:
     return snap
 
 
-def _next_due_checkpoint(t: dict, now: float) -> float | None:
+def _lookup(pairs: dict, pairs_ci: dict, addr: str):
+    return pairs.get(addr) or pairs_ci.get(addr.lower())
+
+
+def _due_checkpoints(t: dict, now: float) -> list:
     hours_since_alert = (now - t.get("alerted_at", now)) / 3600
     done = set(t.get("checkpoints_done", []))
-    for cp in sorted(config.CHECKPOINT_HOURS):
-        if cp not in done and hours_since_alert >= cp:
-            return cp
-    return None
+    return [cp for cp in sorted(config.CHECKPOINT_HOURS) if cp not in done and hours_since_alert >= cp]
+
+
+def _peak_info(t: dict):
+    """(peak multiple vs alert price, hours after alert it was seen) from a tracked record.
+    The peak is the highest price seen at our scans, so a spike that rose and fell between
+    two scans is missed and the true ATH can be higher."""
+    alert_price, peak = t.get("alert_price"), t.get("peak_price")
+    if not alert_price or not peak:
+        return None, None
+    mult = max(peak / alert_price, 1.0)
+    peak_hours = None
+    if t.get("peak_at") and t.get("alerted_at"):
+        peak_hours = max((t["peak_at"] - t["alerted_at"]) / 3600, 0)
+    return mult, peak_hours
+
+
+def _update_alerted(t: dict, pair, fetch_failed: bool, now: float):
+    """Refresh one alerted token: track its peak, decide if it's dead, and emit a check-in
+    if one is due. Returns at most one output dict (a "dead" or "checkpoint" message)."""
+    if fetch_failed:
+        return None  # couldn't reach DexScreener — don't count it against the token
+
+    if "peak_price" not in t:
+        t["legacy"] = True  # alerted before ATH tracking existed — remembered, so it stays legacy
+    legacy = t.get("legacy", False)
+    alert_price = t.get("alert_price")
+    price = _safe_float(pair.get("priceUsd")) if pair else None
+    liquidity = (pair.get("liquidity") or {}).get("usd") if pair else None
+    market_cap = pair.get("marketCap") if pair else None
+
+    t.setdefault("peak_price", alert_price)
+    t.setdefault("peak_at", t.get("alerted_at", now))
+    if price is not None and alert_price:
+        if price > (t.get("peak_price") or 0):
+            t["peak_price"], t["peak_at"] = price, now
+        t["last_pct_change"] = (price - alert_price) / alert_price * 100
+    if market_cap is not None:
+        t["last_market_cap"] = market_cap
+    if pair and pair.get("url"):
+        t["url"] = pair["url"]
+
+    reason = None
+    if pair is None or price is None:
+        reason = "pair no longer found"
+    elif alert_price and price <= alert_price * (1 + config.DEAD_DROP_FROM_ALERT_PCT / 100):
+        reason = f"price down {abs(config.DEAD_DROP_FROM_ALERT_PCT):.0f}%+ from the alert"
+    elif liquidity is not None and liquidity < config.DEAD_MIN_LIQUIDITY_USD:
+        reason = "liquidity drained"
+    t["dead_strikes"] = t.get("dead_strikes", 0) + 1 if reason else 0
+
+    peak_mult, peak_hours = _peak_info(t)
+    base = {
+        "name": t.get("name"), "symbol": t.get("symbol"), "chain": t.get("chain"),
+        "alert_score": t.get("alert_score"), "alert_risk": t.get("alert_risk"),
+        # legacy coins have no recorded peak, so show ATH as unknown rather than a misleading 1.0x
+        "peak_mult": None if legacy else peak_mult,
+        "peak_hours": None if legacy else peak_hours,
+        "url": t.get("url"),
+    }
+
+    if t["dead_strikes"] >= config.DEAD_CONFIRMATIONS:
+        t["status"] = "dead"
+        t["died_at"] = now
+        if legacy:
+            return None  # old alert, no peak history — retire it quietly instead of a burst of messages
+        return {
+            **base, "type": "dead", "reason": reason,
+            "pct_change": t.get("last_pct_change"),
+            "market_cap": t.get("last_market_cap"), "liquidity_usd": liquidity,
+            "lifetime_hours": (now - t.get("alerted_at", now)) / 3600,
+        }
+
+    if price is None:
+        return None  # wait for a clean reading before sending a check-in
+
+    due = _due_checkpoints(t, now)
+    if not due:
+        return None
+    t["checkpoints_done"] = t.get("checkpoints_done", []) + due
+    if max(config.CHECKPOINT_HOURS) in t["checkpoints_done"]:
+        t["status"] = "done"
+    return {
+        **base, "type": "checkpoint", "hours": max(due),
+        "pct_change": t.get("last_pct_change"), "market_cap": market_cap,
+    }
 
 
 def scan_for_active_new_tokens() -> list[dict]:
     """
-    Each cycle: finds brand-new tokens and alerts on ones that already
-    qualify; re-checks tokens that didn't qualify yet in case they've
-    built momentum since; and checks in on already-alerted tokens at
-    set intervals to record what actually happened. Returns a list of
-    dicts tagged "type": "alert" or "checkpoint".
+    Each cycle: finds brand-new tokens and alerts on ones that already qualify; re-checks
+    tokens that didn't qualify yet in case they've built momentum since; and refreshes every
+    alerted token — tracking its peak, sending check-ins at the set hour marks, and retiring
+    it with a final "dead" message once it has collapsed. Returns dicts tagged "type":
+    "alert", "checkpoint", or "dead".
 
-    Whatever progress is made gets saved in the finally block even if
-    something unexpected fails partway through this function.
+    Whatever progress is made gets saved in the finally block even if something
+    unexpected fails partway through this function.
     """
     tracked = _load_tracked()
     permanent_seen = _load_permanent_seen()
     now = time.time()
     outputs = []
+    print(f"[chain_scanner] state loaded: {len(tracked)} tracked, {len(permanent_seen)} permanently seen")
 
     try:
         candidates = get_latest_profiles() + get_latest_boosts()
@@ -287,27 +408,33 @@ def scan_for_active_new_tokens() -> list[dict]:
             addr for addr, t in tracked.items()
             if t.get("status") == "watching" and (now - t["first_seen"]) / 3600 <= config.MAX_TOKEN_AGE_HOURS
         ]
-        due_for_checkpoint = [
-            addr for addr, t in tracked.items()
-            if t.get("status") == "alerted" and _next_due_checkpoint(t, now) is not None
-        ]
-        to_fetch = list(set(still_watching + due_for_checkpoint))
-        pairs = get_pairs_batch(to_fetch) if to_fetch else {}
+        alerted_alive = [addr for addr, t in tracked.items() if t.get("status") == "alerted"]
+        print(f"[chain_scanner] checking {len(still_watching)} watching + {len(alerted_alive)} alerted tokens")
+
+        to_fetch = list(set(still_watching + alerted_alive))
+        pairs, failed = get_pairs_batch(to_fetch) if to_fetch else ({}, set())
+        pairs_ci = {k.lower(): v for k, v in pairs.items()}
 
         for addr in still_watching:
             try:
-                pair = pairs.get(addr)
+                pair = _lookup(pairs, pairs_ci, addr)
                 if not pair or not _is_unusually_active(pair):
                     continue
                 snap = _token_snapshot(pair)
                 snap["rug_check"] = rug_filter.get_rug_check(snap["chain"], snap["address"])
                 snap["quick_read"] = generate_quick_read(snap, has_rug_check=snap["rug_check"] is not None)
                 outputs.append(snap)
+                alert_price = _safe_float(pair.get("priceUsd"))
                 tracked[addr].update({
                     "status": "alerted",
                     "alerted_at": now,
-                    "alert_price": _safe_float(pair.get("priceUsd")),
+                    "alert_price": alert_price,
                     "alert_score": snap["activity_score"],
+                    "alert_risk": (snap.get("rug_check") or {}).get("score"),
+                    "peak_price": alert_price,
+                    "peak_at": now,
+                    "dead_strikes": 0,
+                    "url": snap.get("url"),
                     "name": snap["name"],
                     "symbol": snap["symbol"],
                     "checkpoints_done": [],
@@ -316,42 +443,20 @@ def scan_for_active_new_tokens() -> list[dict]:
             except Exception as e:
                 print(f"[chain_scanner] error evaluating {addr}: {e}")
 
-        for addr in due_for_checkpoint:
+        for addr in alerted_alive:
             try:
-                pair = pairs.get(addr)
-                t = tracked[addr]
-                due_hours = _next_due_checkpoint(t, now)
-                if not pair:
-                    t["checkpoints_done"] = t.get("checkpoints_done", []) + [due_hours]
-                    continue
-
-                current_price = _safe_float(pair.get("priceUsd"))
-                alert_price = t.get("alert_price")
-                pct_change = None
-                if current_price is not None and alert_price:
-                    pct_change = (current_price - alert_price) / alert_price * 100
-
-                outputs.append({
-                    "type": "checkpoint",
-                    "name": t.get("name"),
-                    "symbol": t.get("symbol"),
-                    "chain": t.get("chain"),
-                    "hours": due_hours,
-                    "pct_change": pct_change,
-                    "market_cap": pair.get("marketCap"),
-                    "url": pair.get("url"),
-                })
-                t["checkpoints_done"] = t.get("checkpoints_done", []) + [due_hours]
-                if pct_change is not None:
-                    t["last_pct_change"] = pct_change
+                out = _update_alerted(tracked[addr], _lookup(pairs, pairs_ci, addr), addr in failed, now)
+                if out:
+                    outputs.append(out)
             except Exception as e:
-                print(f"[chain_scanner] error on checkpoint for {addr}: {e}")
+                print(f"[chain_scanner] error updating {addr}: {e}")
 
         max_checkpoint = max(config.CHECKPOINT_HOURS)
         tracked = {
             addr: t for addr, t in tracked.items()
             if (t.get("status") == "watching" and (now - t["first_seen"]) / 3600 <= config.MAX_TOKEN_AGE_HOURS)
-            or (t.get("status") == "alerted" and (now - t.get("alerted_at", now)) / 3600 <= max_checkpoint + 6)
+            or (t.get("status") in ("alerted", "done", "dead")
+                and (now - t.get("alerted_at", now)) / 3600 <= max_checkpoint + 6)
         }
     except Exception as e:
         print(f"[chain_scanner] scan cycle error: {e}")
@@ -363,17 +468,21 @@ def scan_for_active_new_tokens() -> list[dict]:
 
 
 def track_record_summary() -> str | None:
-    """An honest scorecard: of alerts that reached their final checkpoint, how many were up?"""
+    """An honest scorecard over alerts that have finished (died, or ran the full check-in schedule)."""
     tracked = _load_tracked()
-    max_checkpoint = max(config.CHECKPOINT_HOURS)
-    finals = [
+    finished = [
         t for t in tracked.values()
-        if t.get("status") == "alerted"
-        and max_checkpoint in t.get("checkpoints_done", [])
-        and t.get("last_pct_change") is not None
+        if t.get("status") in ("dead", "done") and not t.get("legacy")
+        and t.get("alert_price") and t.get("last_pct_change") is not None
     ]
-    if not finals:
+    if not finished:
         return None
-    up = sum(1 for t in finals if t["last_pct_change"] > 0)
-    avg = sum(t["last_pct_change"] for t in finals) / len(finals)
-    return f"Track record: {up}/{len(finals)} alerts were up {max_checkpoint:.0f}h later (avg {avg:+.0f}%)."
+    mults = [max((t.get("peak_price") or t["alert_price"]) / t["alert_price"], 1.0) for t in finished]
+    n = len(finished)
+    hit2 = sum(1 for m in mults if m >= 2)
+    up = sum(1 for t in finished if t["last_pct_change"] > 0)
+    return (
+        f"Track record ({n} finished): {hit2 / n:.0%} hit 2x+ at some point, "
+        f"{up / n:.0%} ended above the alert price, avg ATH {sum(mults) / n:.1f}x "
+        f"(ATH = highest price seen at our scans)."
+    )

@@ -20,9 +20,10 @@ def main():
         print(f"[scan_once] unexpected error during scan: {e}")
         results = []
 
-    new_alerts = [r for r in results if r.get("type") != "checkpoint"]
+    new_alerts = [r for r in results if r.get("type") == "alert"]
     checkins = [r for r in results if r.get("type") == "checkpoint"]
-    print(f"Scan complete: {len(new_alerts)} new alert(s), {len(checkins)} check-in(s).")
+    dead = [r for r in results if r.get("type") == "dead"]
+    print(f"Scan complete: {len(new_alerts)} new alert(s), {len(checkins)} check-in(s), {len(dead)} died.")
 
     for item in results:
         try:

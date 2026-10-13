@@ -87,16 +87,65 @@ def format_alert(token: dict) -> str:
     return "\n".join(lines)
 
 
+def _fmt_mult(m) -> str:
+    if m is None:
+        return "—"
+    return f"{m:.0f}x" if m >= 10 else f"{m:.1f}x"
+
+
+def _ath_text(item: dict) -> str:
+    mult = item.get("peak_mult")
+    text = f"ATH: {_fmt_mult(mult)}"
+    if mult and mult >= 1.05 and item.get("peak_hours") is not None:
+        text += f" ({item['peak_hours']:.1f}h after alert)"
+    return text
+
+
+def _origin_line(item: dict):
+    origin = []
+    if item.get("alert_score") is not None:
+        origin.append(f"Activity {item['alert_score']}/100")
+    if item.get("alert_risk") is not None:
+        origin.append(f"Risk {item['alert_risk']}/10")
+    return "Alerted at: " + " · ".join(origin) if origin else None
+
+
 def format_checkpoint_alert(item: dict) -> str:
-    pct_str = _fmt_pct(item.get("pct_change"))
     lines = [
         "",
         f"📍 {item['hours']:.0f}H CHECK-IN",
         f"${item.get('symbol')} — {item.get('name')}",
-        f"Since alert: {pct_str}",
+        f"Now: {_fmt_pct(item.get('pct_change'))}  |  {_ath_text(item)}",
     ]
+    origin = _origin_line(item)
+    if origin:
+        lines.append(origin)
     if item.get("market_cap"):
         lines.append(f"MCap now: {_fmt_usd(item['market_cap'])}")
+    if item.get("url"):
+        lines.append(item["url"])
+    return "\n".join(lines)
+
+
+def format_dead_alert(item: dict) -> str:
+    lines = [
+        "",
+        f"💀 DEAD — ${item.get('symbol')} — {item.get('name')}",
+        f"Now: {_fmt_pct(item.get('pct_change'))}  |  {_ath_text(item)}",
+    ]
+    stats = []
+    if item.get("market_cap") is not None:
+        stats.append(f"MCap {_fmt_usd(item['market_cap'])}")
+    if item.get("liquidity_usd") is not None:
+        stats.append(f"Liquidity {_fmt_usd(item['liquidity_usd'])}")
+    if stats:
+        lines.append(" · ".join(stats))
+    lifetime = item.get("lifetime_hours")
+    lasted = f"Lasted {lifetime:.1f}h — " if lifetime is not None else ""
+    lines.append(f"{lasted}{item.get('reason', 'collapsed')}. No more check-ins.")
+    origin = _origin_line(item)
+    if origin:
+        lines.append(origin)
     if item.get("url"):
         lines.append(item["url"])
     return "\n".join(lines)
@@ -105,7 +154,11 @@ def format_checkpoint_alert(item: dict) -> str:
 def _send_telegram(message: str) -> bool:
     """Actually checks whether Telegram accepted the message, and retries once on a rate limit."""
     url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": config.TELEGRAM_CHAT_ID, "text": message}
+    payload = {
+        "chat_id": config.TELEGRAM_CHAT_ID,
+        "text": message,
+        "disable_web_page_preview": True,  # previews add 3 junk lines with stale numbers
+    }
 
     for attempt in range(2):
         try:
@@ -141,8 +194,13 @@ def _send(message: str, telegram_eligible: bool = True):
 
 
 def send_alert(item: dict):
-    if item.get("type") == "checkpoint":
-        _send(format_checkpoint_alert(item))  # check-ins always go through — they're rare and valuable
+    kind = item.get("type")
+    if kind in ("checkpoint", "dead"):
+        # Follow-ups only go to Telegram for alerts that were pushed there in the first place.
+        score = item.get("alert_score")
+        eligible = score is None or score >= config.MIN_TELEGRAM_SCORE
+        text = format_dead_alert(item) if kind == "dead" else format_checkpoint_alert(item)
+        _send(text, telegram_eligible=eligible)
         return
 
     score = item.get("activity_score")
