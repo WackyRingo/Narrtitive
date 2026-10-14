@@ -101,6 +101,14 @@ def _ath_text(item: dict) -> str:
     return text
 
 
+def _late_note(item: dict) -> str:
+    """Scans can run late, so a "6H" check-in may really be sent at 7.7h — say so when it's off."""
+    elapsed, due = item.get("elapsed_hours"), item.get("hours")
+    if elapsed is not None and due is not None and elapsed - due >= 0.25:
+        return f" ({elapsed:.1f}h in)"
+    return ""
+
+
 def _origin_line(item: dict):
     origin = []
     if item.get("alert_score") is not None:
@@ -113,7 +121,7 @@ def _origin_line(item: dict):
 def format_checkpoint_alert(item: dict) -> str:
     lines = [
         "",
-        f"📍 {item['hours']:.0f}H CHECK-IN",
+        f"📍 {item['hours']:.0f}H CHECK-IN{_late_note(item)}",
         f"${item.get('symbol')} — {item.get('name')}",
         f"Now: {_fmt_pct(item.get('pct_change'))}  |  {_ath_text(item)}",
     ]

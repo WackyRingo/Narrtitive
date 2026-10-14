@@ -342,11 +342,19 @@ def _update_alerted(t: dict, pair, fetch_failed: bool, now: float):
     elif liquidity is not None and liquidity < config.DEAD_MIN_LIQUIDITY_USD:
         reason = "liquidity drained"
     t["dead_strikes"] = t.get("dead_strikes", 0) + 1 if reason else 0
+    if (
+        reason and reason.startswith("price down")
+        and liquidity is not None and liquidity < config.MIN_LIQUIDITY_USD
+    ):
+        # Down 90%+ AND the pool is below the minimum we required to alert at all: that's a
+        # collapse, not a glitch, so don't wait for a second scan (scans can be hours apart).
+        t["dead_strikes"] = config.DEAD_CONFIRMATIONS
 
     peak_mult, peak_hours = _peak_info(t)
     base = {
         "name": t.get("name"), "symbol": t.get("symbol"), "chain": t.get("chain"),
         "alert_score": t.get("alert_score"), "alert_risk": t.get("alert_risk"),
+        "elapsed_hours": (now - t.get("alerted_at", now)) / 3600,
         # legacy coins have no recorded peak, so show ATH as unknown rather than a misleading 1.0x
         "peak_mult": None if legacy else peak_mult,
         "peak_hours": None if legacy else peak_hours,

@@ -139,7 +139,8 @@ last full upload.
   the true ATH can be higher than shown.
 - A coin is retired with one final 💀 DEAD message once it's down 90%+
   from the alert, its pool drains below $1,000, or its pair disappears
-  (confirmed on 2 scans in a row). After that it's no longer checked.
+  (confirmed on 2 scans in a row — or immediately if it's down 90%+ and the
+  pool is below the $5,000 alert minimum). After that it's no longer checked.
   Thresholds are `DEAD_*` in `config.py`.
 - Check-in and dead messages only go to Telegram for alerts that scored
   high enough to be pushed there; everything is still tracked.
