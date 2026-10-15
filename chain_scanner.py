@@ -309,6 +309,17 @@ def _peak_info(t: dict):
     return mult, peak_hours
 
 
+def _wants_card(t: dict, peak_mult, legacy: bool) -> bool:
+    """Draw a PNL-style card for a coin that has run — once, then again only if it later
+    ran another 1.5x. Needs the market cap at alert time, so older records get text only."""
+    if legacy or not peak_mult or not t.get("alert_mcap") or peak_mult < config.PNL_CARD_MIN_MULT:
+        return False
+    if peak_mult < 1.5 * t.get("card_peak", 0):
+        return False
+    t["card_peak"] = peak_mult
+    return True
+
+
 def _update_alerted(t: dict, pair, fetch_failed: bool, now: float):
     """Refresh one alerted token: track its peak, decide if it's dead, and emit a check-in
     if one is due. Returns at most one output dict (a "dead" or "checkpoint" message)."""
@@ -355,6 +366,7 @@ def _update_alerted(t: dict, pair, fetch_failed: bool, now: float):
         "name": t.get("name"), "symbol": t.get("symbol"), "chain": t.get("chain"),
         "alert_score": t.get("alert_score"), "alert_risk": t.get("alert_risk"),
         "elapsed_hours": (now - t.get("alerted_at", now)) / 3600,
+        "alert_mcap": t.get("alert_mcap"),
         # legacy coins have no recorded peak, so show ATH as unknown rather than a misleading 1.0x
         "peak_mult": None if legacy else peak_mult,
         "peak_hours": None if legacy else peak_hours,
@@ -371,6 +383,7 @@ def _update_alerted(t: dict, pair, fetch_failed: bool, now: float):
             "pct_change": t.get("last_pct_change"),
             "market_cap": t.get("last_market_cap"), "liquidity_usd": liquidity,
             "lifetime_hours": (now - t.get("alerted_at", now)) / 3600,
+            "send_card": _wants_card(t, peak_mult, legacy),
         }
 
     if price is None:
@@ -385,6 +398,7 @@ def _update_alerted(t: dict, pair, fetch_failed: bool, now: float):
     return {
         **base, "type": "checkpoint", "hours": max(due),
         "pct_change": t.get("last_pct_change"), "market_cap": market_cap,
+        "send_card": _wants_card(t, peak_mult, legacy),
     }
 
 
@@ -441,6 +455,7 @@ def scan_for_active_new_tokens() -> list[dict]:
                     "alert_risk": (snap.get("rug_check") or {}).get("score"),
                     "peak_price": alert_price,
                     "peak_at": now,
+                    "alert_mcap": snap.get("market_cap"),
                     "dead_strikes": 0,
                     "url": snap.get("url"),
                     "name": snap["name"],

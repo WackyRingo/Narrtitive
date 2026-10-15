@@ -51,6 +51,10 @@ DEAD_DROP_FROM_ALERT_PCT = -90
 DEAD_MIN_LIQUIDITY_USD = 1000
 DEAD_CONFIRMATIONS = 2
 
+# Check-ins and death messages for coins that ran at least this many x above the alert
+# price come with a PNL-style image card instead of plain text.
+PNL_CARD_MIN_MULT = 2.0
+
 # --- Polling ---
 # DexScreener's discovery endpoints are free but rate-limited to 60 req/min —
 # this script uses a small, batched number of calls per cycle either way.

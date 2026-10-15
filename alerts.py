@@ -194,6 +194,39 @@ def _send_telegram(message: str) -> bool:
     return False
 
 
+def _telegram_ready() -> bool:
+    return bool(config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID)
+
+
+def _send_telegram_photo(png: bytes, caption: str) -> bool:
+    """Sends an image with a caption; checks Telegram's reply and retries once on a rate limit."""
+    url = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendPhoto"
+    for attempt in range(2):
+        try:
+            resp = requests.post(
+                url,
+                data={"chat_id": config.TELEGRAM_CHAT_ID, "caption": caption[:1000]},
+                files={"photo": ("pnl.png", png, "image/png")},
+                timeout=30,
+            )
+        except Exception as e:
+            print(f"[alerts] Telegram photo send failed (network error): {e}")
+            return False
+        if resp.status_code == 200:
+            return True
+        if resp.status_code == 429 and attempt == 0:
+            retry_after = 2
+            try:
+                retry_after = (resp.json().get("parameters") or {}).get("retry_after", 2)
+            except Exception:
+                pass
+            time.sleep(retry_after)
+            continue
+        print(f"[alerts] Telegram photo send failed: {resp.status_code} {resp.text[:200]}")
+        return False
+    return False
+
+
 def _send(message: str, telegram_eligible: bool = True):
     print(message)
     if telegram_eligible and config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID:
@@ -208,6 +241,18 @@ def send_alert(item: dict):
         score = item.get("alert_score")
         eligible = score is None or score >= config.MIN_TELEGRAM_SCORE
         text = format_dead_alert(item) if kind == "dead" else format_checkpoint_alert(item)
+        if item.get("send_card") and eligible and _telegram_ready():
+            try:
+                import pnl_card
+                png = pnl_card.render(item)
+            except Exception as e:
+                print(f"[alerts] PNL card failed, sending text only: {e}")
+            else:
+                print(text)
+                if not _send_telegram_photo(png, text.strip()):
+                    _send_telegram(text)  # photo didn't go through — don't lose the message
+                time.sleep(TELEGRAM_SEND_DELAY_SECONDS)
+                return
         _send(text, telegram_eligible=eligible)
         return
 

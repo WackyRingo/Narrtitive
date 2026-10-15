@@ -142,6 +142,10 @@ last full upload.
   (confirmed on 2 scans in a row — or immediately if it's down 90%+ and the
   pool is below the $5,000 alert minimum). After that it's no longer checked.
   Thresholds are `DEAD_*` in `config.py`.
+- Coins that ran 2x or more (`PNL_CARD_MIN_MULT`) get a PNL-style image card
+  with their check-in or death message — entry market cap, ATH multiple, and
+  time to peak. It needs Pillow (in `requirements.txt`); if the image can't be
+  made, you get the normal text message instead.
 - Check-in and dead messages only go to Telegram for alerts that scored
   high enough to be pushed there; everything is still tracked.
 
