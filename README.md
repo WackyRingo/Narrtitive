@@ -146,6 +146,13 @@ last full upload.
   with their check-in or death message — entry market cap, ATH multiple, and
   time to peak. It needs Pillow (in `requirements.txt`); if the image can't be
   made, you get the normal text message instead.
+- A Phanes-style leaderboard (`leaderboard.py`) ranks the bot's calls by ATH
+  multiple, with hit rate, median, and how many finished calls ended green
+  or died. It posts once a day, and you can ask for it any time by typing
+  `/lb` (or `/lb 24h`, `/lb 7d`, `/lb 30d`, `/lb all`) in the chat — the next
+  scan replies, so it can take a while if scans are running late. Call history
+  is kept 35 days inside `alerted_addresses.json` (which is why that file is
+  now an object, not a plain list; old files upgrade automatically).
 - Check-in and dead messages only go to Telegram for alerts that scored
   high enough to be pushed there; everything is still tracked.
 

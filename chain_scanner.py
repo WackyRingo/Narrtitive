@@ -25,6 +25,11 @@ import requests
 import config
 import rug_filter
 
+try:
+    import history  # also carries the leaderboard's call history inside alerted_addresses.json
+except ImportError:  # an older upload without history.py still runs, just without the leaderboard
+    history = None
+
 BASE_URL = "https://api.dexscreener.com"
 TRACKED_PATH = Path("tracked_tokens.json")
 PERMANENT_SEEN_PATH = Path("alerted_addresses.json")  # never pruned — belt and suspenders against repeats
@@ -48,6 +53,8 @@ def _save_tracked(tracked: dict):
 
 
 def _load_permanent_seen() -> set:
+    if history:
+        return set(history.load_store()["addresses"])
     if PERMANENT_SEEN_PATH.exists():
         try:
             return set(json.loads(PERMANENT_SEEN_PATH.read_text()))
@@ -57,6 +64,11 @@ def _load_permanent_seen() -> set:
 
 
 def _save_permanent_seen(addresses: set):
+    if history:
+        store = history.load_store()  # read-modify-write, so the leaderboard history in the same file survives
+        store["addresses"] = sorted(addresses)
+        history.save_store(store)
+        return
     PERMANENT_SEEN_PATH.write_text(json.dumps(sorted(addresses)))
 
 

@@ -13,6 +13,11 @@ import config
 from chain_scanner import scan_for_active_new_tokens, track_record_summary
 from alerts import send_alert
 
+try:
+    from leaderboard import run_housekeeping
+except Exception:  # an older upload without leaderboard.py still runs, just without it
+    run_housekeeping = None
+
 
 def main():
     print(f"Scanning DexScreener every {config.POLL_INTERVAL_SECONDS}s (free, no API keys). Ctrl+C to stop.")
@@ -21,6 +26,8 @@ def main():
             results = scan_for_active_new_tokens()
             for item in results:
                 send_alert(item)
+            if run_housekeeping:
+                run_housekeeping()  # leaderboard history, /lb commands, daily post
             summary = track_record_summary()
             if summary:
                 print(summary)

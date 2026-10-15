@@ -12,6 +12,11 @@ should degrade, not take the workflow down with it.
 from chain_scanner import scan_for_active_new_tokens, track_record_summary
 from alerts import send_alert
 
+try:
+    from leaderboard import run_housekeeping
+except Exception:  # an older upload without leaderboard.py still runs, just without it
+    run_housekeeping = None
+
 
 def main():
     try:
@@ -30,6 +35,12 @@ def main():
             send_alert(item)
         except Exception as e:
             print(f"[scan_once] error sending an alert: {e}")
+
+    if run_housekeeping:
+        try:
+            run_housekeeping()  # leaderboard history, /lb commands, daily post
+        except Exception as e:
+            print(f"[scan_once] leaderboard step failed: {e}")
 
     try:
         summary = track_record_summary()

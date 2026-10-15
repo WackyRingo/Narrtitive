@@ -55,6 +55,15 @@ DEAD_CONFIRMATIONS = 2
 # price come with a PNL-style image card instead of plain text.
 PNL_CARD_MIN_MULT = 2.0
 
+# --- Leaderboard ---
+# Ranks the bot's own calls by how high they ran, with hit-rate stats. Posted once a day at
+# the first scan after LEADERBOARD_HOUR_UTC (21 = early morning on Australia's east coast),
+# and on demand: type /lb (or /lb 24h, /lb 7d, /lb 30d, /lb all) in the Telegram chat.
+LEADERBOARD_AUTOPOST = True
+LEADERBOARD_PERIOD = "7d"      # period for the daily post and for a bare /lb
+LEADERBOARD_TOP_N = 10
+LEADERBOARD_HOUR_UTC = 21
+
 # --- Polling ---
 # DexScreener's discovery endpoints are free but rate-limited to 60 req/min —
 # this script uses a small, batched number of calls per cycle either way.
