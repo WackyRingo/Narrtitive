@@ -131,6 +131,35 @@ dragging a file with the same name as an existing one replaces it.
 `.github/workflows/scan.yml`. Everything else is unchanged from the
 last full upload.
 
+## Keeping the chat quiet
+
+- **One message per coin.** The alert is compact (about 6 lines). Later check-ins
+  (1h/6h/24h/72h) and the death notice edit that same message with a tracking line
+  like `📍 1H +12% · 6H +160% | ATH 2.6x`, instead of sending new messages. If a message
+  can't be edited, the follow-up falls back to a normal message. (`EDIT_IN_PLACE`)
+- **Quiet notifications.** Only new alerts buzz your phone. Follow-ups, the leaderboard
+  and `/stats` are sent silently (`QUIET_FOLLOWUPS`). A 2x+ image card still buzzes
+  (`CARD_NOTIFY`), and a call scoring `LOUD_DEATH_SCORE`+ that dies gets a short fresh note.
+- **Copycat waves collapse.** If 3+ coins in one batch share a theme word ("Quantum ...",
+  "Stonk ..."), the oldest gets a normal alert and the rest become one digest message.
+  They're still tracked and still count in the leaderboard; only an image card breaks
+  their silence. (`WAVE_COLLAPSE`, `WAVE_MIN`)
+- **One pinned leaderboard**, edited in place at most every 30 minutes.
+
+## Commands (type them in the bot's chat; the next scan replies)
+
+- `/lb`, `/lb 24h`, `/lb 7d`, `/lb 30d`, `/lb all` — the leaderboard for a period
+- `/stats` — which entry conditions (Activity score, coin age, 1h gain, buy share,
+  liquidity, rug-check risk, chain, wave role) actually separated winners from losers.
+  Groups under 5 calls are marked "too few" instead of given a percentage.
+
+## Security checks
+
+- Solana: Solana Tracker's risk score plus named flags (freeze/mint authority,
+  LP not burned, top-10 holders, bundlers). Coins already flagged as rugged are dropped.
+- Ethereum / BSC / Base: free GoPlus check — honeypot, buy/sell tax, mintable,
+  hidden owner, unverified code, LP locked. Honeypots are dropped. (`evm_security.py`)
+
 ## Known limitations
 
 - Check-ins show **ATH** — the highest price seen at our scans since the
@@ -148,7 +177,7 @@ last full upload.
   made, you get the normal text message instead.
 - A Phanes-style leaderboard (`leaderboard.py`) ranks the bot's calls by ATH
   multiple, with hit rate, median, and how many finished calls ended green
-  or died. It posts once a day, and you can ask for it any time by typing
+  or died. It lives in one pinned message that updates in place, and you can ask for it any time by typing
   `/lb` (or `/lb 24h`, `/lb 7d`, `/lb 30d`, `/lb all`) in the chat — the next
   scan replies, so it can take a while if scans are running late. Call history
   is kept 35 days inside `alerted_addresses.json` (which is why that file is

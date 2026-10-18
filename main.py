@@ -10,27 +10,14 @@ Stop with Ctrl+C.
 import time
 
 import config
-from chain_scanner import scan_for_active_new_tokens, track_record_summary
-from alerts import send_alert
-
-try:
-    from leaderboard import run_housekeeping
-except Exception:  # an older upload without leaderboard.py still runs, just without it
-    run_housekeeping = None
+from scan_once import run_cycle
 
 
 def main():
     print(f"Scanning DexScreener every {config.POLL_INTERVAL_SECONDS}s (free, no API keys). Ctrl+C to stop.")
     while True:
         try:
-            results = scan_for_active_new_tokens()
-            for item in results:
-                send_alert(item)
-            if run_housekeeping:
-                run_housekeeping()  # leaderboard history, /lb commands, daily post
-            summary = track_record_summary()
-            if summary:
-                print(summary)
+            run_cycle()
         except Exception as e:
             print(f"[main] error this cycle: {e}")
         time.sleep(config.POLL_INTERVAL_SECONDS)

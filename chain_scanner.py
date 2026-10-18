@@ -30,6 +30,11 @@ try:
 except ImportError:  # an older upload without history.py still runs, just without the leaderboard
     history = None
 
+try:
+    import evm_security  # free GoPlus check for Ethereum/BSC/Base alerts
+except ImportError:
+    evm_security = None
+
 BASE_URL = "https://api.dexscreener.com"
 TRACKED_PATH = Path("tracked_tokens.json")
 PERMANENT_SEEN_PATH = Path("alerted_addresses.json")  # never pruned — belt and suspenders against repeats
@@ -171,6 +176,16 @@ def _is_unusually_active(pair: dict) -> bool:
     if config.ALLOWED_CHAINS and pair.get("chainId") not in config.ALLOWED_CHAINS:
         return False
 
+    # Optional caps, off by default — extreme moves can be coordinated pumps. Turn them on in
+    # config.py only once /stats shows the extreme groups really do worse.
+    gain_1h = (pair.get("priceChange") or {}).get("h1")
+    if config.MAX_PRICE_CHANGE_1H is not None and gain_1h is not None and gain_1h > config.MAX_PRICE_CHANGE_1H:
+        return False
+    txns = (pair.get("txns") or {}).get("h1") or {}
+    b1, s1 = txns.get("buys") or 0, txns.get("sells") or 0
+    if config.MAX_BUY_RATIO is not None and (b1 + s1) > 0 and b1 / (b1 + s1) > config.MAX_BUY_RATIO:
+        return False
+
     liquidity = (pair.get("liquidity") or {}).get("usd") or 0
     if liquidity < config.MIN_LIQUIDITY_USD:
         return False
@@ -297,6 +312,42 @@ def _token_snapshot(pair: dict) -> dict:
     return snap
 
 
+def _should_skip(snap: dict) -> bool:
+    """Coins that are already rugged or can't be sold are dropped instead of alerted."""
+    if config.DROP_RUGGED and (snap.get("rug_check") or {}).get("rugged"):
+        print(f"[chain_scanner] skipping {snap.get('symbol')} — already rugged")
+        return True
+    if config.DROP_HONEYPOTS and (snap.get("evm_check") or {}).get("honeypot") is True:
+        print(f"[chain_scanner] skipping {snap.get('symbol')} — honeypot")
+        return True
+    return False
+
+
+def _entry_features(snap: dict) -> dict:
+    """The conditions a coin was alerted under, recorded so /stats can later show which ones mattered."""
+    buys, sells = snap.get("buys_1h") or 0, snap.get("sells_1h") or 0
+    liq, vol = snap.get("liquidity_usd"), snap.get("volume_24h")
+    return {
+        "alert_age": snap.get("age_hours"),
+        "alert_gain_1h": snap.get("price_change_1h"),
+        "alert_buy_ratio": round(buys / (buys + sells), 3) if (buys + sells) else None,
+        "alert_liq": liq,
+        "alert_vol_liq": round(vol / liq, 1) if liq and vol is not None else None,
+    }
+
+
+def apply_updates(updates: dict):
+    """Saves per-coin fields produced while delivering messages (message ids, tracking lines,
+    wave roles) into tracked_tokens.json — read-modify-write, after the scan has saved its own state."""
+    if not updates:
+        return
+    tracked = _load_tracked()
+    for addr, fields in updates.items():
+        if addr in tracked:
+            tracked[addr].update(fields)
+    _save_tracked(tracked)
+
+
 def _lookup(pairs: dict, pairs_ci: dict, addr: str):
     return pairs.get(addr) or pairs_ci.get(addr.lower())
 
@@ -383,6 +434,9 @@ def _update_alerted(t: dict, pair, fetch_failed: bool, now: float):
         "peak_mult": None if legacy else peak_mult,
         "peak_hours": None if legacy else peak_hours,
         "url": t.get("url"),
+        # what the Telegram message for this coin looks like right now, so a check-in can edit it
+        "msg_id": t.get("msg_id"), "msg_html": t.get("msg_html"),
+        "track": t.get("track") or [], "quiet": t.get("quiet", False),
     }
 
     if t["dead_strikes"] >= config.DEAD_CONFIRMATIONS:
@@ -456,7 +510,11 @@ def scan_for_active_new_tokens() -> list[dict]:
                     continue
                 snap = _token_snapshot(pair)
                 snap["rug_check"] = rug_filter.get_rug_check(snap["chain"], snap["address"])
-                snap["quick_read"] = generate_quick_read(snap, has_rug_check=snap["rug_check"] is not None)
+                snap["evm_check"] = evm_security.get_evm_check(snap["chain"], snap["address"]) if evm_security else None
+                if _should_skip(snap):
+                    tracked[addr]["status"] = "skipped"  # dropped for good — won't be re-checked or re-alerted
+                    permanent_seen.add(addr)
+                    continue
                 outputs.append(snap)
                 alert_price = _safe_float(pair.get("priceUsd"))
                 tracked[addr].update({
@@ -468,6 +526,7 @@ def scan_for_active_new_tokens() -> list[dict]:
                     "peak_price": alert_price,
                     "peak_at": now,
                     "alert_mcap": snap.get("market_cap"),
+                    **_entry_features(snap),
                     "dead_strikes": 0,
                     "url": snap.get("url"),
                     "name": snap["name"],
@@ -482,6 +541,7 @@ def scan_for_active_new_tokens() -> list[dict]:
             try:
                 out = _update_alerted(tracked[addr], _lookup(pairs, pairs_ci, addr), addr in failed, now)
                 if out:
+                    out["address"] = addr
                     outputs.append(out)
             except Exception as e:
                 print(f"[chain_scanner] error updating {addr}: {e}")

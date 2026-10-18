@@ -2,10 +2,12 @@
 A Phanes-style leaderboard of the bot's own calls: stats for a period, then the
 best calls ranked by how high they ran (ATH multiple vs the alert price).
 
-Three ways it shows up:
-  - automatically once a day (LEADERBOARD_AUTOPOST, at LEADERBOARD_HOUR_UTC),
-  - on demand: type /lb in the Telegram chat — /lb 24h, /lb 7d, /lb 30d, /lb all —
-    and the next scan replies (scans can run late, so give it a while),
+How it shows up:
+  - ONE pinned message in the chat, edited in place as results change (at most every
+    LEADERBOARD_UPDATE_MINUTES) — so it never adds new messages to the chat,
+  - on demand: type /lb in the chat — /lb 24h, /lb 7d, /lb 30d, /lb all — and the
+    next scan replies (scans can run late, so give it a while),
+  - /stats: which entry conditions actually separated winners from losers (analysis.py),
   - printed in the run log.
 
 Ranking by ATH flatters a call list, since a coin that ran 5x and then dumped
@@ -16,15 +18,17 @@ at our scans, so a spike that rose and fell between two scans is missed.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import statistics
 import time
-from datetime import datetime, timezone
 
 import requests
 
+import analysis
 import config
 import history
+import tg
 
 PERIODS = {
     "24h": ("24h", 24), "1d": ("24h", 24),
@@ -62,7 +66,7 @@ def _is_finished(c: dict, now: float) -> bool:
 
 
 def build(calls: dict, label: str, hours, now: float, top_n: int):
-    """The leaderboard text for a period, or None if there are no calls in it."""
+    """The leaderboard text (plain) for a period, or None if there are no calls in it."""
     items = list(calls.values())
     if hours is not None:
         cutoff = now - hours * 3600
@@ -131,7 +135,8 @@ def _fetch_updates(offset):
 
 
 def handle_commands(store: dict, now: float, send, fetch=_fetch_updates):
-    """Answer /lb and /leaderboard sent in the configured chat since the last scan."""
+    """Answer /lb, /leaderboard and /stats sent in the configured chat since the last scan.
+    `send` takes plain text."""
     if not (config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID):
         return
     meta = store["meta"]
@@ -142,34 +147,50 @@ def handle_commands(store: dict, now: float, send, fetch=_fetch_updates):
         if str((msg.get("chat") or {}).get("id")) != str(config.TELEGRAM_CHAT_ID):
             continue  # only answer the chat this bot is set up for
         cmd, _, arg = (msg.get("text") or "").strip().partition(" ")
-        if cmd.split("@")[0].lower() not in ("/lb", "/leaderboard"):
-            continue
-        label, hours = parse_period(arg)
-        text = build(store["calls"], label, hours, now, config.LEADERBOARD_TOP_N)
-        send(text or f"No calls in the {TITLES.get(label, label)} yet.")
+        cmd = cmd.split("@")[0].lower()
+        if cmd in ("/lb", "/leaderboard"):
+            label, hours = parse_period(arg)
+            text = build(store["calls"], label, hours, now, config.LEADERBOARD_TOP_N)
+            send(text or f"No calls in the {TITLES.get(label, label)} yet.")
+        elif cmd == "/stats":
+            send(analysis.build(store["calls"], now))
 
 
-def maybe_autopost(store: dict, now: float, send):
-    """Post the leaderboard once a day, at the first scan after LEADERBOARD_HOUR_UTC."""
-    if not config.LEADERBOARD_AUTOPOST:
+def update_pinned(store: dict, now: float, tgmod=tg):
+    """Keep ONE leaderboard message up to date in the chat (and pinned), rather than posting new ones."""
+    if not config.LEADERBOARD_AUTOPOST or not tgmod.ready():
         return
-    moment = datetime.fromtimestamp(now, tz=timezone.utc)
-    today = moment.strftime("%Y-%m-%d")
-    if moment.hour < config.LEADERBOARD_HOUR_UTC or store["meta"].get("last_post_date") == today:
+    meta = store["meta"]
+    if now - meta.get("lb_updated_at", 0) < config.LEADERBOARD_UPDATE_MINUTES * 60:
         return
     label, hours = parse_period(config.LEADERBOARD_PERIOD)
     text = build(store["calls"], label, hours, now, config.LEADERBOARD_TOP_N)
-    if text:
-        send(text)
-        store["meta"]["last_post_date"] = today
+    if not text:
+        return
+    body = tgmod.esc(text)
+    digest = hashlib.md5(body.encode("utf-8")).hexdigest()
+    if digest == meta.get("lb_hash"):
+        meta["lb_updated_at"] = now  # nothing changed — don't poke Telegram
+        return
+
+    msg_id = meta.get("lb_msg_id")
+    if not (msg_id and tgmod.edit_text(msg_id, body)):
+        msg_id = tgmod.send_text(body, silent=True)  # first time, or the old one was deleted
+        if not msg_id:
+            return
+        meta["lb_msg_id"] = msg_id
+        if config.LEADERBOARD_PIN:
+            tgmod.pin(msg_id)
+    meta["lb_hash"] = digest
+    meta["lb_updated_at"] = now
 
 
-def run_housekeeping(now=None, send=None):
-    """Called once per scan: update the history, answer any /lb commands, do the daily post."""
+def run_housekeeping(now=None, send=None, tgmod=tg):
+    """Called once per scan: update the history, answer commands, refresh the pinned leaderboard."""
     now = now if now is not None else time.time()
     if send is None:
-        import alerts
-        send = alerts._send
+        def send(text):  # plain text in, quiet message out
+            tgmod.send_text(tgmod.esc(text), silent=True)
     store = history.load_store()
     try:
         history.sync_from_tracked(store, history.load_tracked(), now)
@@ -178,8 +199,8 @@ def run_housekeeping(now=None, send=None):
         except Exception as e:
             print(f"[leaderboard] command handling failed: {e}")
         try:
-            maybe_autopost(store, now, send)
+            update_pinned(store, now, tgmod)
         except Exception as e:
-            print(f"[leaderboard] daily post failed: {e}")
+            print(f"[leaderboard] pinned board update failed: {e}")
     finally:
         history.save_store(store)

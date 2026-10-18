@@ -65,6 +65,10 @@ def load_tracked() -> dict:
         return {}
 
 
+def _r(value, digits):
+    return round(value, digits) if isinstance(value, (int, float)) else None
+
+
 def sync_from_tracked(store: dict, tracked: dict, now: float) -> int:
     """Copy every alerted coin's latest numbers into the history. Returns how many were updated.
     Skipped: coins alerted before ATH tracking existed (no peak recorded) and weak alerts,
@@ -98,6 +102,13 @@ def sync_from_tracked(store: dict, tracked: dict, now: float) -> int:
             "status": t["status"],
             "alert_score": score,
             "alert_risk": t.get("alert_risk"),
+            # the conditions it was alerted under — what /stats groups by
+            "age": _r(t.get("alert_age"), 2),
+            "gain_1h": _r(t.get("alert_gain_1h"), 1),
+            "buy_ratio": t.get("alert_buy_ratio"),
+            "liq": _r(t.get("alert_liq"), 0),
+            "vol_liq": t.get("alert_vol_liq"),
+            "wave": t.get("wave"),
         }
         updated += 1
 

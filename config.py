@@ -56,13 +56,30 @@ DEAD_CONFIRMATIONS = 2
 PNL_CARD_MIN_MULT = 2.0
 
 # --- Leaderboard ---
-# Ranks the bot's own calls by how high they ran, with hit-rate stats. Posted once a day at
-# the first scan after LEADERBOARD_HOUR_UTC (21 = early morning on Australia's east coast),
-# and on demand: type /lb (or /lb 24h, /lb 7d, /lb 30d, /lb all) in the Telegram chat.
-LEADERBOARD_AUTOPOST = True
-LEADERBOARD_PERIOD = "7d"      # period for the daily post and for a bare /lb
+# Ranks the bot's own calls by how high they ran, with hit-rate stats. One message in the chat is
+# kept up to date (and pinned), and on demand you can type /lb (or /lb 24h, /lb 7d, /lb 30d,
+# /lb all) for a period, or /stats to see which entry conditions actually predicted results.
+LEADERBOARD_AUTOPOST = True    # keep one leaderboard message updated in place
+LEADERBOARD_PIN = True         # ...and pinned (works in a private chat; in a group the bot must be admin)
+LEADERBOARD_PERIOD = "7d"      # period for the pinned board and for a bare /lb
 LEADERBOARD_TOP_N = 10
-LEADERBOARD_HOUR_UTC = 21
+LEADERBOARD_UPDATE_MINUTES = 30
+
+# --- Keeping the chat quiet ---
+EDIT_IN_PLACE = True           # check-ins/deaths edit the coin's original alert instead of new messages
+QUIET_FOLLOWUPS = True         # standalone follow-ups arrive without a phone buzz
+CARD_NOTIFY = True             # ...but an image card for a 2x+ runner does buzz
+LOUD_DEATH_SCORE = 80          # a call that scored this high and then died also gets a short fresh note
+WAVE_COLLAPSE = True           # 3+ coins sharing a theme word in one batch -> one alert + one digest
+WAVE_MIN = 3
+
+# --- Filters beyond the activity thresholds ---
+DROP_RUGGED = True             # don't alert coins Solana Tracker already flags as rugged
+DROP_HONEYPOTS = True          # don't alert coins GoPlus says can't be sold
+# Off by default. Extreme moves can be coordinated pumps, but there's no evidence yet that they do worse —
+# check /stats first. Set to a number (e.g. 500 for +500% in an hour, 0.90 for 90% buys) to cap them.
+MAX_PRICE_CHANGE_1H = None
+MAX_BUY_RATIO = None
 
 # --- Polling ---
 # DexScreener's discovery endpoints are free but rate-limited to 60 req/min —
